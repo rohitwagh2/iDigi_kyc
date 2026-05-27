@@ -1,5 +1,6 @@
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -74,9 +75,6 @@ class KycResponse(BaseModel):
     remarks: str
     welcomeKitPath: str | None = None
     derived: DerivedInfo | None = None
-    extractedName: str | None = None
-    extractedDob: str | None = None
-    extractedAddress: str | None = None
 
 
 PAN_REGEX = r"^[A-Z]{5}[0-9]{4}[A-Z]$"
@@ -240,47 +238,37 @@ def verify(data: KycRequest):
 
     kit_path = _make_welcome_kit(data, age, ratio, prob, status, remarks)
 
-    return KycResponse(
-        accountOpeningId=aid,
-        verified=True,
-        amlClean=(status != "REJECTED"),
-        riskScore=prob,
-        status=status,
-        remarks=remarks,
-        welcomeKitPath=kit_path,
-        derived=DerivedInfo(age=age, depositIncomeRatio=ratio),
+    response_data = {
+    "accountOpeningId": aid,
+    "verified": True,
+    "amlClean": (status != "REJECTED"),
+    "riskScore": prob,
+    "status": status,
+    "remarks": remarks,
+    "derived": {
+        "age": age,
+        "depositIncomeRatio": ratio
+        }
+    }
+
+# Return PDF file directly if approved
+    if status == "APPROVED" and kit_path and os.path.exists(kit_path):
+        return FileResponse(
+            path=kit_path,
+            media_type="application/pdf",
+            filename=os.path.basename(kit_path),
+            headers={
+                "X-KYC-Response": str(response_data)
+            }
+        )
+
+    return response_data
+
+@app.get("/kyc/download/{account_id}")
+def download_welcome_kit(account_id: str):
+    filepath = ...
+    return FileResponse(
+        filepath,
+        media_type="application/pdf",
+        filename=os.path.basename(filepath)
     )
-
-class OcrRequest(BaseModel):
-    documentPath: str
-    documentType: str
-    accountOpeningId: str
-
-@app.post("/kyc/ocr", response_model=KycResponse, tags=["KYC"])
-def ocr_endpoint(data: OcrRequest):
-    try:
-        import ocr_module
-        text = ocr_module.process_document(data.documentPath)
-        extracted = ocr_module.extract_fields(text, data.documentType)
-        
-        return KycResponse(
-            accountOpeningId=data.accountOpeningId,
-            verified=False,
-            amlClean=False,
-            riskScore=0.0,
-            status="OCR_COMPLETED",
-            remarks="OCR Data Extracted successfully",
-            extractedName=extracted["extractedName"],
-            extractedDob=extracted["extractedDob"],
-            extractedAddress=extracted["extractedAddress"]
-        )
-    except Exception as e:
-        print(f"OCR Error: {e}")
-        return KycResponse(
-            accountOpeningId=data.accountOpeningId,
-            verified=False,
-            amlClean=False,
-            riskScore=1.0,
-            status="MANUAL_REVIEW",
-            remarks=f"OCR failed: {str(e)}"
-        )
